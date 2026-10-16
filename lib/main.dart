@@ -111,8 +111,17 @@ class PieSectionItem {
 class DonutChartPainter extends CustomPainter {
   final List<PieSectionItem> sections;
   final double strokeWidth;
+  final double animationProgress; // 0.0 → 1.0 entry animation
+  final int selectedIndex;       // -1 = none selected
+  final double selectedScale;    // 0.0 → 1.0 pop-out animation
 
-  DonutChartPainter({required this.sections, this.strokeWidth = 38.0});
+  DonutChartPainter({
+    required this.sections,
+    this.strokeWidth = 38.0,
+    this.animationProgress = 1.0,
+    this.selectedIndex = -1,
+    this.selectedScale = 0.0,
+  });
 
   @override
   void paint(Canvas canvas, Size size) {
@@ -120,39 +129,119 @@ class DonutChartPainter extends CustomPainter {
     if (total <= 0) return;
 
     final center = Offset(size.width / 2, size.height / 2);
-    final radius = (math.min(size.width, size.height) - strokeWidth) / 2;
+    final baseRadius = (math.min(size.width, size.height) - strokeWidth) / 2;
 
     double startAngle = -math.pi / 2;
+    final bool hasSelection = selectedIndex >= 0;
 
     final paint = Paint()
       ..style = PaintingStyle.stroke
-      ..strokeWidth = strokeWidth
       ..strokeCap = StrokeCap.butt;
 
-    for (var section in sections) {
-      final sweepAngle = (section.value / total) * 2 * math.pi;
-      paint.color = section.color;
+    // First pass: draw shadows for selected section
+    if (hasSelection && selectedIndex < sections.length && selectedScale > 0) {
+      double sAngle = -math.pi / 2;
+      for (int i = 0; i < sections.length; i++) {
+        final fullSweep = (sections[i].value / total) * 2 * math.pi;
+        final sweepAngle = fullSweep * animationProgress;
+        if (i == selectedIndex) {
+          final midAngleForOffset = sAngle + sweepAngle / 2;
+          final explodeOffset = 15.0 * selectedScale;
+          final sectionCenter = Offset(
+            center.dx + explodeOffset * math.cos(midAngleForOffset),
+            center.dy + explodeOffset * math.sin(midAngleForOffset),
+          );
+
+          // 1. Soft dark drop shadow for realistic elevation
+          final darkShadowOffset = Offset(
+            sectionCenter.dx + 2.0 * math.cos(midAngleForOffset),
+            sectionCenter.dy + 4.0 * selectedScale,
+          );
+          final darkShadowPaint = Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeWidth + 6.0 * selectedScale
+            ..strokeCap = StrokeCap.round
+            ..color = Colors.black.withValues(alpha: 0.25 * selectedScale)
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, 8.0 * selectedScale);
+
+          canvas.drawArc(
+            Rect.fromCircle(center: darkShadowOffset, radius: baseRadius),
+            sAngle,
+            sweepAngle > 0.05 ? sweepAngle - 0.03 : sweepAngle,
+            false,
+            darkShadowPaint,
+          );
+
+          // 2. Vibrant colored glow matching category
+          final glowPaint = Paint()
+            ..style = PaintingStyle.stroke
+            ..strokeWidth = strokeWidth + 14.0 * selectedScale
+            ..strokeCap = StrokeCap.round
+            ..color = sections[i].color.withValues(alpha: 0.40 * selectedScale)
+            ..maskFilter = MaskFilter.blur(BlurStyle.normal, 12.0 * selectedScale);
+
+          canvas.drawArc(
+            Rect.fromCircle(center: sectionCenter, radius: baseRadius),
+            sAngle,
+            sweepAngle > 0.05 ? sweepAngle - 0.03 : sweepAngle,
+            false,
+            glowPaint,
+          );
+          break;
+        }
+        sAngle += sweepAngle;
+      }
+    }
+
+    // Second pass: draw all sections
+    for (int i = 0; i < sections.length; i++) {
+      final section = sections[i];
+      final fullSweep = (section.value / total) * 2 * math.pi;
+      final sweepAngle = fullSweep * animationProgress;
+
+      final bool isSelected = i == selectedIndex;
+
+      // Dim non-selected sections when something is selected
+      if (hasSelection && !isSelected) {
+        final dimFactor = 1.0 - (0.4 * selectedScale);
+        paint.color = Color.lerp(section.color, Colors.grey, 1.0 - dimFactor)!
+            .withValues(alpha: (0.5 + 0.5 * dimFactor));
+      } else {
+        paint.color = section.color;
+      }
+
+      final double explodeOffset = isSelected ? 14.0 * selectedScale : 0.0;
+      final double extraStroke = isSelected ? 8.0 * selectedScale : 0.0;
+      paint.strokeWidth = strokeWidth + extraStroke;
+
+      final midAngleForOffset = startAngle + sweepAngle / 2;
+      final sectionCenter = Offset(
+        center.dx + explodeOffset * math.cos(midAngleForOffset),
+        center.dy + explodeOffset * math.sin(midAngleForOffset),
+      );
 
       canvas.drawArc(
-        Rect.fromCircle(center: center, radius: radius),
+        Rect.fromCircle(center: sectionCenter, radius: baseRadius),
         startAngle,
         sweepAngle > 0.05 ? sweepAngle - 0.03 : sweepAngle,
         false,
         paint,
       );
 
-      if (sweepAngle > 0.3) {
+      // Draw percentage labels
+      if (sweepAngle > 0.3 && animationProgress > 0.7) {
+        final labelOpacity = ((animationProgress - 0.7) / 0.3).clamp(0.0, 1.0);
         final midAngle = startAngle + sweepAngle / 2;
         final labelOffset = Offset(
-          center.dx + radius * math.cos(midAngle),
-          center.dy + radius * math.sin(midAngle),
+          sectionCenter.dx + baseRadius * math.cos(midAngle),
+          sectionCenter.dy + baseRadius * math.sin(midAngle),
         );
 
         final textSpan = TextSpan(
           text: section.title,
-          style: const TextStyle(
-            color: Colors.white,
-            fontSize: 12,
+          style: TextStyle(
+            color: Colors.white.withValues(alpha: labelOpacity),
+            fontSize: isSelected ? 14 : 12,
             fontWeight: FontWeight.bold,
           ),
         );
@@ -172,8 +261,43 @@ class DonutChartPainter extends CustomPainter {
     }
   }
 
+  /// Returns the section index at a given local position, or -1 if none.
+  /// Returns -2 if tap is inside the donut hole (center).
+  static int hitTestSection(Offset position, Size size, List<PieSectionItem> sections, double strokeWidth) {
+    final double total = sections.fold(0.0, (sum, s) => sum + s.value);
+    if (total <= 0) return -1;
+
+    final center = Offset(size.width / 2, size.height / 2);
+    final radius = (math.min(size.width, size.height) - strokeWidth) / 2;
+    final delta = position - center;
+    final distance = delta.distance;
+
+    // Inside the donut hole
+    if (distance < radius - strokeWidth / 2) return -2;
+
+    // Outside the donut ring
+    if (distance > radius + strokeWidth / 2 + 20) return -1;
+
+    // Calculate angle of the tap
+    double tapAngle = math.atan2(delta.dy, delta.dx);
+    tapAngle = tapAngle + math.pi / 2;
+    if (tapAngle < 0) tapAngle += 2 * math.pi;
+
+    double accumulated = 0.0;
+    for (int i = 0; i < sections.length; i++) {
+      final sweep = (sections[i].value / total) * 2 * math.pi;
+      if (tapAngle <= accumulated + sweep) return i;
+      accumulated += sweep;
+    }
+    return -1;
+  }
+
   @override
-  bool shouldRepaint(covariant CustomPainter oldDelegate) => true;
+  bool shouldRepaint(covariant DonutChartPainter oldDelegate) =>
+      animationProgress != oldDelegate.animationProgress ||
+      selectedIndex != oldDelegate.selectedIndex ||
+      selectedScale != oldDelegate.selectedScale ||
+      sections.length != oldDelegate.sections.length;
 }
 
 class InteractiveBackground extends StatefulWidget {
@@ -276,7 +400,7 @@ class MainScreen extends StatefulWidget {
   State<MainScreen> createState() => _MainScreenState();
 }
 
-class _MainScreenState extends State<MainScreen> {
+class _MainScreenState extends State<MainScreen> with TickerProviderStateMixin {
   List<Account> _accounts = [
     Account(id: 'main', name: 'Compte Principal', iconType: 'wallet'),
   ];
@@ -285,9 +409,42 @@ class _MainScreenState extends State<MainScreen> {
   bool _isLoading = true;
   String _selectedLang = 'dr';
   bool _isDarkMode = false;
+  bool _hideAmounts = false;
   int _selectedIndex = 0;
   late PageController _pageController;
   int _selectedQuarter = 0;
+
+  // Chart animation state
+  late AnimationController _chartEntryController;
+  late Animation<double> _chartEntryAnimation;
+  late AnimationController _chartSelectController;
+  late Animation<double> _chartSelectAnimation;
+  int _selectedChartSection = -1;
+  bool _isChartFocused = false;
+  bool _chartHasAnimated = false;
+
+  void _minimizeChartFocus() {
+    if (_isChartFocused || _selectedChartSection != -1) {
+      setState(() {
+        _isChartFocused = false;
+      });
+      _chartSelectController.reverse().then((_) {
+        if (mounted && !_isChartFocused) {
+          setState(() {
+            _selectedChartSection = -1;
+          });
+        }
+      });
+    }
+  }
+
+  void _focusChartSection(int index) {
+    setState(() {
+      _selectedChartSection = index;
+      _isChartFocused = true;
+    });
+    _chartSelectController.forward(from: 0.0);
+  }
 
   final Map<String, IconData> _categoryIcons = {
     'food': Icons.fastfood,
@@ -417,17 +574,40 @@ class _MainScreenState extends State<MainScreen> {
     super.initState();
     _pageController = PageController();
     _selectedQuarter = (DateTime.now().month - 1) ~/ 3 + 1;
+
+    // Chart entry sweep animation (plays when stats tab is first shown)
+    _chartEntryController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 900),
+    );
+    _chartEntryAnimation = CurvedAnimation(
+      parent: _chartEntryController,
+      curve: Curves.easeOutCubic,
+    );
+
+    // Chart section pop-out animation
+    _chartSelectController = AnimationController(
+      vsync: this,
+      duration: const Duration(milliseconds: 320),
+    );
+    _chartSelectAnimation = CurvedAnimation(
+      parent: _chartSelectController,
+      curve: Curves.easeOutCubic,
+      reverseCurve: Curves.easeOutCubic,
+    );
+
     _loadData();
   }
 
   @override
   void dispose() {
     _pageController.dispose();
+    _chartEntryController.dispose();
+    _chartSelectController.dispose();
     super.dispose();
   }
 
   Future<void> _exportData() async {
-    final prefs = await SharedPreferences.getInstance();
     final exportMap = {
       'accounts': _accounts.map((a) => a.toMap()).toList(),
       'transactions': _transactions.map((t) => t.toMap()).toList(),
@@ -482,12 +662,14 @@ class _MainScreenState extends State<MainScreen> {
     await prefs.setString('selected_account_id', _selectedAccountId);
     await prefs.setString('lang', _selectedLang);
     await prefs.setBool('isDark', _isDarkMode);
+    await prefs.setBool('hide_amounts', _hideAmounts);
   }
 
   Future<void> _loadData() async {
     final prefs = await SharedPreferences.getInstance();
     if (prefs.containsKey('lang')) _selectedLang = prefs.getString('lang') ?? 'dr';
     if (prefs.containsKey('isDark')) _isDarkMode = prefs.getBool('isDark') ?? false;
+    if (prefs.containsKey('hide_amounts')) _hideAmounts = prefs.getBool('hide_amounts') ?? false;
     if (prefs.containsKey('selected_account_id')) {
       _selectedAccountId = prefs.getString('selected_account_id') ?? 'all';
     }
@@ -660,7 +842,7 @@ class _MainScreenState extends State<MainScreen> {
                         ),
                       ),
                       trailing: Text(
-                        '${_calculateBalance('all').toStringAsFixed(2)} ${t('currency')}',
+                        _hideAmounts ? '******' : '${_calculateBalance('all').toStringAsFixed(2)} ${t('currency')}',
                         style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 15),
                         textDirection: TextDirection.ltr,
                       ),
@@ -708,7 +890,7 @@ class _MainScreenState extends State<MainScreen> {
                                 mainAxisSize: MainAxisSize.min,
                                 children: [
                                   Text(
-                                    '${accBalance.toStringAsFixed(2)} ${t('currency')}',
+                                    _hideAmounts ? '******' : '${accBalance.toStringAsFixed(2)} ${t('currency')}',
                                     style: TextStyle(
                                       fontWeight: FontWeight.bold,
                                       fontSize: 14,
@@ -1093,7 +1275,7 @@ class _MainScreenState extends State<MainScreen> {
                                 ],
                               ),
                               trailing: Text(
-                                '- ${tx.amount.toStringAsFixed(2)} ${t('currency')}',
+                                _hideAmounts ? '******' : '- ${tx.amount.toStringAsFixed(2)} ${t('currency')}',
                                 style: const TextStyle(
                                   color: Colors.redAccent,
                                   fontWeight: FontWeight.bold,
@@ -1141,6 +1323,19 @@ class _MainScreenState extends State<MainScreen> {
               backgroundColor: _isDarkMode ? Colors.black.withOpacity(0.85) : Colors.blue[900]!.withOpacity(0.85),
               elevation: 0,
               actions: [
+                IconButton(
+                  icon: Icon(
+                    _hideAmounts ? Icons.visibility_off : Icons.visibility,
+                    color: _hideAmounts ? Colors.redAccent : Colors.cyanAccent,
+                  ),
+                  tooltip: _hideAmounts ? 'Biyyen l-flouss' : 'Khabbi l-flouss',
+                  onPressed: () {
+                    setState(() {
+                      _hideAmounts = !_hideAmounts;
+                      _saveData();
+                    });
+                  },
+                ),
                 PopupMenuButton<String>(
                   icon: const Icon(Icons.save_alt, color: Colors.greenAccent),
                   onSelected: (result) {
@@ -1293,10 +1488,30 @@ class _MainScreenState extends State<MainScreen> {
               const SizedBox(height: 8),
               FittedBox(
                 fit: BoxFit.scaleDown,
-                child: Text(
-                  '${_currentBalance.toStringAsFixed(2)} ${t('currency')}',
-                  style: const TextStyle(color: Colors.white, fontSize: 38, fontWeight: FontWeight.bold),
-                  textDirection: TextDirection.ltr,
+                child: Row(
+                  mainAxisSize: MainAxisSize.min,
+                  children: [
+                    Text(
+                      _hideAmounts ? '******' : '${_currentBalance.toStringAsFixed(2)} ${t('currency')}',
+                      style: const TextStyle(color: Colors.white, fontSize: 38, fontWeight: FontWeight.bold),
+                      textDirection: TextDirection.ltr,
+                    ),
+                    const SizedBox(width: 8),
+                    IconButton(
+                      icon: Icon(
+                        _hideAmounts ? Icons.visibility_off : Icons.visibility,
+                        color: Colors.white70,
+                        size: 24,
+                      ),
+                      tooltip: _hideAmounts ? 'Biyyen l-flouss' : 'Khabbi l-flouss',
+                      onPressed: () {
+                        setState(() {
+                          _hideAmounts = !_hideAmounts;
+                          _saveData();
+                        });
+                      },
+                    ),
+                  ],
                 ),
               ),
             ],
@@ -1363,7 +1578,9 @@ class _MainScreenState extends State<MainScreen> {
                           ],
                         ),
                         trailing: Text(
-                          '${tx.isExpense ? '-' : '+'} ${tx.amount.toStringAsFixed(2)} ${t('currency')}',
+                          _hideAmounts
+                              ? '******'
+                              : '${tx.isExpense ? '-' : '+'} ${tx.amount.toStringAsFixed(2)} ${t('currency')}',
                           style: TextStyle(
                             fontWeight: FontWeight.bold,
                             fontSize: 15,
@@ -1402,6 +1619,29 @@ class _MainScreenState extends State<MainScreen> {
       }
     }
 
+    // Trigger entry animation when there are expenses and chart hasn't animated yet
+    if (totalExpense > 0 && !_chartHasAnimated) {
+      _chartHasAnimated = true;
+      // Use addPostFrameCallback so we don't call forward() during build
+      WidgetsBinding.instance.addPostFrameCallback((_) {
+        _chartEntryController.forward(from: 0.0);
+      });
+    }
+
+    // Build sections list for the painter (kept in sync for hit-testing)
+    final chartSections = catTransactions.entries.map((entry) {
+      double catTotal = entry.value.fold(0.0, (sum, item) => sum + item.amount);
+      final percentage = (catTotal / totalExpense) * 100;
+      return PieSectionItem(
+        color: _categoryColors[entry.key] ?? Colors.grey,
+        value: catTotal,
+        title: '${percentage.toStringAsFixed(0)}%',
+      );
+    }).toList();
+
+    // Map index back to category key for tap handling
+    final categoryKeys = catTransactions.keys.toList();
+
     return Column(
       children: [
         const SizedBox(height: 16),
@@ -1435,7 +1675,11 @@ class _MainScreenState extends State<MainScreen> {
                   onChanged: (val) {
                     setState(() {
                       _selectedQuarter = val!;
+                      _selectedChartSection = -1;
+                      _chartSelectController.reset();
                     });
+                    // Re-play entry animation on filter change
+                    _chartEntryController.forward(from: 0.0);
                   },
                 ),
               ),
@@ -1446,47 +1690,140 @@ class _MainScreenState extends State<MainScreen> {
         Expanded(
           child: totalExpense == 0
               ? Center(child: Text(t('no_expenses'), style: const TextStyle(fontSize: 18)))
-              : SingleChildScrollView(
-                  child: Column(
-                    children: [
-                      Text(t('stats_title'), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
-                      const SizedBox(height: 24),
-                      SizedBox(
-                        width: 220,
-                        height: 220,
-                        child: CustomPaint(
-                          painter: DonutChartPainter(
-                            sections: catTransactions.entries.map((entry) {
-                              double catTotal = entry.value.fold(0.0, (sum, item) => sum + item.amount);
-                              final percentage = (catTotal / totalExpense) * 100;
-                              return PieSectionItem(
-                                color: _categoryColors[entry.key] ?? Colors.grey,
-                                value: catTotal,
-                                title: '${percentage.toStringAsFixed(0)}%',
-                              );
-                            }).toList(),
-                          ),
-                        ),
-                      ),
-                      const SizedBox(height: 24),
-                      ...catTransactions.entries.map((entry) {
-                        double catTotal = entry.value.fold(0.0, (sum, item) => sum + item.amount);
-                        return Card(
-                          margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
-                          elevation: 0,
-                          color: Colors.transparent,
-                          child: ListTile(
-                            onTap: () => _showCategoryDetails(context, entry.key, entry.value),
-                            leading: Icon(_categoryIcons[entry.key], color: _categoryColors[entry.key]),
-                            title: Text(t('cat_${entry.key}'), style: const TextStyle(fontWeight: FontWeight.bold)),
-                            trailing: Text(
-                              '${catTotal.toStringAsFixed(2)} ${t('currency')}',
-                              style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+              : GestureDetector(
+                  behavior: HitTestBehavior.opaque,
+                  onTap: () {
+                    // Tap anywhere outside the graph cancels focus with smooth animation
+                    _minimizeChartFocus();
+                  },
+                  child: SingleChildScrollView(
+                    child: Column(
+                      children: [
+                        Text(t('stats_title'), style: const TextStyle(fontSize: 22, fontWeight: FontWeight.bold)),
+                        const SizedBox(height: 24),
+                        GestureDetector(
+                          behavior: HitTestBehavior.opaque,
+                          onTapDown: (details) {
+                            const double chartSize = 240;
+                            final localPos = details.localPosition;
+                            final hitIdx = DonutChartPainter.hitTestSection(
+                              localPos,
+                              const Size(chartSize, chartSize),
+                              chartSections,
+                              38.0,
+                            );
+                            if (hitIdx >= 0) {
+                              if (_selectedChartSection == hitIdx && _isChartFocused) {
+                                // Tapping same section → minimize it with smooth reverse animation
+                                _minimizeChartFocus();
+                              } else {
+                                // Focus new section with smooth forward animation
+                                _focusChartSection(hitIdx);
+                              }
+                            } else {
+                              // Tapped center hole or outside donut ring → minimize smoothly
+                              _minimizeChartFocus();
+                            }
+                          },
+                          child: SizedBox(
+                            width: 240,
+                            height: 240,
+                            child: Stack(
+                              alignment: Alignment.center,
+                              children: [
+                                AnimatedBuilder(
+                                  animation: Listenable.merge([_chartEntryAnimation, _chartSelectAnimation]),
+                                  builder: (context, _) {
+                                    return CustomPaint(
+                                      size: const Size(240, 240),
+                                      painter: DonutChartPainter(
+                                        sections: chartSections,
+                                        animationProgress: _chartEntryAnimation.value,
+                                        selectedIndex: _selectedChartSection,
+                                        selectedScale: _chartSelectAnimation.value,
+                                      ),
+                                    );
+                                  },
+                                ),
+                                // Minimalist name and icon inside center of donut
+                                AnimatedBuilder(
+                                  animation: _chartSelectAnimation,
+                                  builder: (context, _) {
+                                    if (_selectedChartSection < 0 ||
+                                        _selectedChartSection >= categoryKeys.length ||
+                                        _chartSelectAnimation.value == 0) {
+                                      return const SizedBox.shrink();
+                                    }
+                                    final catKey = categoryKeys[_selectedChartSection];
+                                    final catColor = _categoryColors[catKey] ?? Colors.blueAccent;
+                                    final catIcon = _categoryIcons[catKey] ?? Icons.category;
+
+                                    return Opacity(
+                                      opacity: _chartSelectAnimation.value.clamp(0.0, 1.0),
+                                      child: Transform.scale(
+                                        scale: 0.8 + 0.2 * _chartSelectAnimation.value,
+                                        child: Column(
+                                          mainAxisSize: MainAxisSize.min,
+                                          children: [
+                                            Icon(
+                                              catIcon,
+                                              color: catColor,
+                                              size: 32,
+                                            ),
+                                            const SizedBox(height: 5),
+                                            Text(
+                                              t('cat_$catKey'),
+                                              style: TextStyle(
+                                                fontWeight: FontWeight.bold,
+                                                fontSize: 14,
+                                                color: _isDarkMode ? Colors.white : Colors.black87,
+                                              ),
+                                              textAlign: TextAlign.center,
+                                              maxLines: 1,
+                                              overflow: TextOverflow.ellipsis,
+                                            ),
+                                          ],
+                                        ),
+                                      ),
+                                    );
+                                  },
+                                ),
+                              ],
                             ),
                           ),
-                        );
-                      }),
-                    ],
+                        ),
+                        const SizedBox(height: 24),
+                        ...catTransactions.entries.toList().asMap().entries.map((mapEntry) {
+                          final idx = mapEntry.key;
+                          final entry = mapEntry.value;
+                          double catTotal = entry.value.fold(0.0, (sum, item) => sum + item.amount);
+                          final isHighlighted = idx == _selectedChartSection && _isChartFocused;
+                          return AnimatedContainer(
+                            duration: const Duration(milliseconds: 300),
+                            curve: Curves.easeOut,
+                            transform: Matrix4.diagonal3Values(isHighlighted ? 1.03 : 1.0, isHighlighted ? 1.03 : 1.0, 1.0),
+                            transformAlignment: Alignment.center,
+                            child: Card(
+                              margin: const EdgeInsets.symmetric(horizontal: 20, vertical: 5),
+                              elevation: isHighlighted ? 4 : 0,
+                              color: isHighlighted
+                                  ? (_categoryColors[entry.key] ?? Colors.grey).withValues(alpha: 0.15)
+                                  : Colors.transparent,
+                              shape: RoundedRectangleBorder(borderRadius: BorderRadius.circular(12)),
+                              child: ListTile(
+                                onTap: () => _showCategoryDetails(context, entry.key, entry.value),
+                                leading: Icon(_categoryIcons[entry.key], color: _categoryColors[entry.key]),
+                                title: Text(t('cat_${entry.key}'), style: const TextStyle(fontWeight: FontWeight.bold)),
+                                trailing: Text(
+                                  _hideAmounts ? '******' : '${catTotal.toStringAsFixed(2)} ${t('currency')}',
+                                  style: const TextStyle(fontWeight: FontWeight.bold, fontSize: 16),
+                                ),
+                              ),
+                            ),
+                          );
+                        }),
+                      ],
+                    ),
                   ),
                 ),
         ),
