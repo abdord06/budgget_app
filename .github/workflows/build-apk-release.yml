@@ -1,0 +1,57 @@
+name: Build Flutter APK and Release
+
+on:
+  workflow_dispatch:
+  push:
+    branches: [master]
+    paths:
+      - ".github/workflows/build-apk-release.yml"
+      - "lib/**"
+      - "pubspec.yaml"
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@v4
+
+      - name: Set up Java 17
+        uses: actions/setup-java@v4
+        with:
+          distribution: temurin
+          java-version: "17"
+
+      - name: Set up Flutter
+        uses: subosito/flutter-action@v2
+        with:
+          channel: stable
+          cache: true
+
+      - name: Set app label to Masroufi Pro (build only, not committed)
+        run: sed -i 's/android:label="[^"]*"/android:label="Masroufi Pro"/' android/app/src/main/AndroidManifest.xml
+
+      - name: Get dependencies
+        run: flutter pub get
+
+      - name: Build release APK
+        run: flutter build apk --release
+
+      - name: Prepare APK for release
+        run: cp build/app/outputs/flutter-apk/app-release.apk Masroufi-Pro-v1.0.0.apk
+
+      - name: Publish GitHub Release with the APK
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: v1.0.0
+          name: Masroufi Pro v1.0.0 (Flutter)
+          body: |
+            Masroufi Pro — Flutter version, built from the budgget_app repository (version 1.0.0+1 from pubspec.yaml).
+
+            Download Masroufi-Pro-v1.0.0.apk below and install it on Android.
+            Note: this build is signed with the standard debug signing key so it can be installed directly for personal use; it is not a Play Store signing build.
+          files: Masroufi-Pro-v1.0.0.apk
+          fail_on_unmatched_files: true
